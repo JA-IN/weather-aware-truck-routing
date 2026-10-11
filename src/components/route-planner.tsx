@@ -8,6 +8,7 @@ import { CORRIDOR_LAYERS, MAX_FORECAST_HOUR, type CorridorLayer } from "@/lib/co
 import { CheckpointRiskStrip, CheckpointTimeline } from "@/components/checkpoint-timeline";
 import { buildSampleAnalysis } from "@/lib/demo-corridor";
 import { apiUrl } from "@/lib/api-config";
+import { geocodeInBrowser, isGeocodeFailure } from "@/lib/geocode-browser";
 
 const CorridorMap = dynamic(() => import("@/components/corridor-map").then((m) => m.CorridorMap), {
   ssr: false,
@@ -57,6 +58,7 @@ export function RoutePlanner({ startWithSample = false }: RoutePlannerProps) {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<RouteAnalysisResponse | null>(bootstrap);
   const [analysisSource, setAnalysisSource] = useState<"live" | "offline" | "sample">(bootstrap ? "sample" : "live");
+  const [geocodeNote, setGeocodeNote] = useState<string | null>(null);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(bootstrap?.recommendedRouteId ?? null);
 
   const [layer, setLayer] = useState<CorridorLayer>("risk");
@@ -111,6 +113,7 @@ export function RoutePlanner({ startWithSample = false }: RoutePlannerProps) {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setGeocodeNote(null);
 
     try {
       const departure = new Date(form.departureIsoLocal);
@@ -122,13 +125,41 @@ export function RoutePlanner({ startWithSample = false }: RoutePlannerProps) {
         sampleMiles: Number(form.sampleMiles),
       };
 
-      const res = await fetch(apiUrl("/api/route-analysis"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const request = (payload: typeof body) =>
+        fetch(apiUrl("/api/route-analysis"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
 
-      const json = (await res.json()) as RouteAnalysisResponse & { error?: string };
+      let res = await request(body);
+      let json = (await res.json()) as RouteAnalysisResponse & { error?: string };
+
+      // Any place name works as long as the server can reach Nominatim. If the
+      // server cannot (egress-restricted sandbox / CI) but this browser can,
+      // resolve here and re-send coordinates, which need no geocoding.
+      if (!res.ok && isGeocodeFailure(json.error ?? "")) {
+        const [originGeo, destinationGeo] = await Promise.all([
+          geocodeInBrowser(form.origin),
+          geocodeInBrowser(form.destination),
+        ]);
+
+        if (originGeo && destinationGeo) {
+          res = await request({
+            ...body,
+            origin: `${originGeo.lat.toFixed(5)}, ${originGeo.lon.toFixed(5)}`,
+            destination: `${destinationGeo.lat.toFixed(5)}, ${destinationGeo.lon.toFixed(5)}`,
+          });
+          json = (await res.json()) as RouteAnalysisResponse & { error?: string };
+
+          if (res.ok) {
+            setGeocodeNote(
+              `Places resolved in this browser because the server could not reach the geocoder: ${originGeo.displayName} \u2192 ${destinationGeo.displayName}`,
+            );
+          }
+        }
+      }
+
       if (!res.ok) throw new Error(json.error ?? "Failed to analyze route");
 
       applyAnalysis(json, false);
@@ -191,6 +222,7 @@ export function RoutePlanner({ startWithSample = false }: RoutePlannerProps) {
               fallback - so every surface stays reviewable with no geocoding, routing, weather or database access.
             </p>
           </form>
+          {geocodeNote ? <p className="mt-3 text-xs text-cyan-200/80">{geocodeNote}</p> : null}
           {error ? (
             <p className="mt-3 text-sm text-rose-200">
               {error}
