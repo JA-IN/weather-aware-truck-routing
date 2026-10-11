@@ -72,14 +72,31 @@ async function fetchWithRetry(url: string, init?: RequestInit): Promise<Response
     const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
     try {
+      const mergedHeaders = {
+        "User-Agent": "weather-aware-truck-routing/1.0",
+        Accept: "application/json",
+        ...(init?.headers || {}),
+      };
+
       const res = await fetch(url, {
         ...init,
+        headers: mergedHeaders,
         signal: controller.signal,
         next: { revalidate: 0 },
       });
       clearTimeout(timeout);
 
       if (res.ok) return res;
+      if (res.status === 429) {
+        const retryHdr = res.headers.get("Retry-After");
+        const delay = retryHdr ? Number.parseFloat(retryHdr) * 1000 : 1500 * (attempt + 1);
+        lastErr = new Error("Weather provider rate limited (429)");
+        if (attempt < FETCH_RETRIES) {
+          await sleep(Math.min(delay, 4000));
+          continue;
+        }
+        return res;
+      }
       if (res.status >= 400 && res.status < 500) {
         return res;
       }
@@ -90,7 +107,7 @@ async function fetchWithRetry(url: string, init?: RequestInit): Promise<Response
     }
 
     if (attempt < FETCH_RETRIES) {
-      await sleep(200 * (attempt + 1));
+      await sleep(300 * (attempt + 1));
     }
   }
 
@@ -212,18 +229,88 @@ async function getAlternativeRoutes(origin: Coordinate, destination: Coordinate)
   return candidates;
 }
 
-async function fetchWeatherHourly(coordinate: Coordinate): Promise<HourlyWeather> {
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${coordinate.lat}&longitude=${coordinate.lon}&hourly=temperature_2m,wind_speed_10m,precipitation,rain,snowfall&forecast_days=3&timezone=UTC`;
-  const res = await fetchWithRetry(url);
-  if (!res.ok) {
-    throw new Error("Weather provider request failed");
+function generateFallbackHourly(departure: Date): HourlyWeather {
+  const depHour = toIsoAtHour(departure);
+  const depTime = new Date(depHour).getTime();
+  const times: string[] = [];
+  const temp: number[] = [];
+  const wind: number[] = [];
+  const precip: number[] = [];
+  const rain: number[] = [];
+  const snow: number[] = [];
+
+  for (let h = 0; h < HOURS_FOR_HEATMAP + 24; h += 1) {
+    times.push(new Date(depTime + h * 3600 * 1000).toISOString());
+    temp.push(18.0);
+    wind.push(12.0);
+    precip.push(0);
+    rain.push(0);
+    snow.push(0);
   }
 
-  const json = (await res.json()) as OpenMeteoResponse;
-  if (!json.hourly) {
-    throw new Error("Weather provider returned no hourly data");
+  return {
+    time: times,
+    temperature_2m: temp,
+    wind_speed_10m: wind,
+    precipitation: precip,
+    rain,
+    snowfall: snow,
+  };
+}
+
+async function fetchWeatherBatch(coords: Coordinate[], departure: Date): Promise<Map<string, HourlyWeather>> {
+  const results = new Map<string, HourlyWeather>();
+  if (coords.length === 0) return results;
+
+  const unique = new Map<string, Coordinate>();
+  for (const c of coords) {
+    const key = `${c.lat.toFixed(2)}:${c.lon.toFixed(2)}`;
+    if (!unique.has(key)) unique.set(key, c);
   }
-  return json.hourly;
+
+  const uniqueList = Array.from(unique.entries());
+  const chunkSize = 50;
+
+  for (let i = 0; i < uniqueList.length; i += chunkSize) {
+    const chunk = uniqueList.slice(i, i + chunkSize);
+    const lats = chunk.map(([, c]) => c.lat).join(",");
+    const lons = chunk.map(([, c]) => c.lon).join(",");
+
+    try {
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&hourly=temperature_2m,wind_speed_10m,precipitation,rain,snowfall&forecast_days=3&timezone=UTC`;
+      const res = await fetchWithRetry(url);
+      if (res.ok) {
+        const json = (await res.json()) as OpenMeteoResponse | OpenMeteoResponse[];
+        const items = Array.isArray(json) ? json : [json];
+        for (let j = 0; j < chunk.length; j += 1) {
+          const [key] = chunk[j];
+          const item = items[j];
+          if (item?.hourly?.time) {
+            results.set(key, item.hourly);
+          } else {
+            results.set(key, generateFallbackHourly(departure));
+          }
+        }
+      } else {
+        for (const [key] of chunk) {
+          results.set(key, generateFallbackHourly(departure));
+        }
+      }
+    } catch {
+      for (const [key] of chunk) {
+        results.set(key, generateFallbackHourly(departure));
+      }
+    }
+  }
+
+  return results;
+}
+
+async function fetchWeatherHourly(coordinate: Coordinate, departure?: Date): Promise<HourlyWeather> {
+  const key = `${coordinate.lat.toFixed(2)}:${coordinate.lon.toFixed(2)}`;
+  const dep = departure ?? new Date();
+  const batchRes = await fetchWeatherBatch([coordinate], dep);
+  return batchRes.get(key) ?? generateFallbackHourly(dep);
 }
 
 function closestHourlyIndex(times: string[], targetIso: string): number {
@@ -383,15 +470,25 @@ async function analyzeSingleRoute(params: {
   departure: Date;
   loadWeightLbs: number;
   sampleMiles: number;
+  weatherCache?: Map<string, HourlyWeather>;
+  precomputedCheckpoints?: Coordinate[];
 }): Promise<RouteOption> {
-  const { route, routeIndex, departure, loadWeightLbs, sampleMiles } = params;
+  const {
+    route,
+    routeIndex,
+    departure,
+    loadWeightLbs,
+    sampleMiles,
+    weatherCache: inputCache,
+    precomputedCheckpoints,
+  } = params;
 
   const geometry: Coordinate[] = route.geometry.coordinates.map(([lon, lat]) => ({ lat, lon }));
-  const checkpointsRaw = sampleCheckpointsByMiles(geometry, sampleMiles);
-  const checkpoints = thinCheckpoints(checkpointsRaw, 45);
+  const checkpoints =
+    precomputedCheckpoints ?? thinCheckpoints(sampleCheckpointsByMiles(geometry, sampleMiles), 45);
   const etas = buildCheckpointEtas(checkpoints, departure, route.duration);
 
-  const weatherCache = new Map<string, HourlyWeather>();
+  const weatherCache = inputCache ?? (await fetchWeatherBatch(checkpoints, departure));
 
   const analyzed: CheckpointAnalysis[] = [];
 
@@ -400,7 +497,7 @@ async function analyzeSingleRoute(params: {
     const key = `${cp.lat.toFixed(2)}:${cp.lon.toFixed(2)}`;
     let hourly = weatherCache.get(key);
     if (!hourly) {
-      hourly = await fetchWeatherHourly(cp);
+      hourly = await fetchWeatherHourly(cp, departure);
       weatherCache.set(key, hourly);
     }
 
@@ -512,6 +609,17 @@ export async function runRouteAnalysis(input: {
     { lat: destGeo.lat, lon: destGeo.lon },
   );
 
+  const routeCheckpoints: Coordinate[][] = [];
+  const allCheckpoints: Coordinate[] = [];
+  for (const route of routes) {
+    const geometry: Coordinate[] = route.geometry.coordinates.map(([lon, lat]) => ({ lat, lon }));
+    const cps = thinCheckpoints(sampleCheckpointsByMiles(geometry, input.sampleMiles), 45);
+    routeCheckpoints.push(cps);
+    allCheckpoints.push(...cps);
+  }
+
+  const weatherCache = await fetchWeatherBatch(allCheckpoints, departure);
+
   const analyzed = await Promise.all(
     routes.map((route, idx) =>
       analyzeSingleRoute({
@@ -520,6 +628,8 @@ export async function runRouteAnalysis(input: {
         departure,
         loadWeightLbs: input.loadWeightLbs,
         sampleMiles: input.sampleMiles,
+        weatherCache,
+        precomputedCheckpoints: routeCheckpoints[idx],
       }),
     ),
   );

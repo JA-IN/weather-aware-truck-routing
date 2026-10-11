@@ -1,8 +1,11 @@
+import logging
 import time
 
 from django.db import connection
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+logger = logging.getLogger(__name__)
 
 from .serializers import RouteAnalysisRequestSerializer
 from .services import AnalysisError, get_stored_analysis, run_route_analysis
@@ -50,8 +53,10 @@ class RouteAnalysisView(APIView):
         try:
             result = run_route_analysis(serializer.validated_data)
         except AnalysisError as exc:
+            logger.warning("AnalysisError in RouteAnalysisView: %s", exc)
             return Response({"error": str(exc)}, status=502)
         except Exception as exc:  # noqa: BLE001 - surfaced to client intentionally
+            logger.exception("Unexpected exception in RouteAnalysisView: %s", exc)
             return Response({"error": str(exc)}, status=500)
 
         return Response(result, status=200)

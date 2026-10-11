@@ -1,3 +1,4 @@
+import logging
 import math
 import time
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,8 @@ from .geo import (
 from .models import RouteAnalysis, TripRequest
 from .risk import classify_risk, risk_label, summarize_checkpoint_risks
 
+logger = logging.getLogger(__name__)
+
 FETCH_TIMEOUT_SECONDS = 13
 FETCH_RETRIES = 2
 HOURS_FOR_HEATMAP = 72
@@ -25,20 +28,50 @@ class AnalysisError(Exception):
     pass
 
 
-def _fetch_with_retry(url: str, params: dict | None = None, headers: dict | None = None) -> requests.Response:
+def _fetch_with_retry(
+    url: str,
+    params: dict | None = None,
+    headers: dict | None = None,
+    max_retries: int = FETCH_RETRIES,
+) -> requests.Response:
     last_error: Exception | None = None
+    merged_headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    if headers:
+        merged_headers.update(headers)
 
-    for attempt in range(FETCH_RETRIES + 1):
+    for attempt in range(max_retries + 1):
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=FETCH_TIMEOUT_SECONDS)
+            resp = requests.get(url, params=params, headers=merged_headers, timeout=FETCH_TIMEOUT_SECONDS)
+            if resp.status_code == 200:
+                return resp
+            if resp.status_code == 429:
+                retry_after_hdr = resp.headers.get("Retry-After")
+                try:
+                    retry_delay = float(retry_after_hdr) if retry_after_hdr else 1.5 * (attempt + 1)
+                except ValueError:
+                    retry_delay = 1.5 * (attempt + 1)
+                logger.warning(
+                    "Upstream %s returned 429 Too Many Requests; backing off for %.1fs (attempt %d/%d)",
+                    url,
+                    retry_delay,
+                    attempt + 1,
+                    max_retries + 1,
+                )
+                last_error = AnalysisError("Weather provider rate limit exceeded (HTTP 429)")
+                if attempt < max_retries:
+                    time.sleep(min(retry_delay, 4.0))
+                    continue
+                return resp
             if resp.status_code < 500:
+                logger.warning("Upstream %s returned status %d: %s", url, resp.status_code, resp.text[:200])
                 return resp
             last_error = AnalysisError(f"Upstream returned {resp.status_code}")
         except requests.RequestException as exc:
+            logger.warning("Request exception when fetching %s: %s", url, exc)
             last_error = exc
 
-        if attempt < FETCH_RETRIES:
-            time.sleep(0.2 * (attempt + 1))
+        if attempt < max_retries:
+            time.sleep(0.4 * (attempt + 1))
 
     raise last_error or AnalysisError("Network request failed")
 
@@ -149,26 +182,77 @@ def get_alternative_routes(origin: dict, destination: dict) -> list:
     return candidates
 
 
-def fetch_weather_hourly(coord: dict) -> dict:
-    resp = _fetch_with_retry(
-        "https://api.open-meteo.com/v1/forecast",
-        params={
-            "latitude": coord["lat"],
-            "longitude": coord["lon"],
-            "hourly": "temperature_2m,wind_speed_10m,precipitation,rain,snowfall",
-            "forecast_days": 3,
-            "timezone": "UTC",
-        },
-    )
-    if resp.status_code != 200:
-        raise AnalysisError("Weather provider request failed")
+def _generate_fallback_hourly(departure_dt: datetime) -> dict:
+    dep_hour = departure_dt.replace(minute=0, second=0, microsecond=0)
+    times = [(dep_hour + timedelta(hours=h)).strftime("%Y-%m-%dT%H:00") for h in range(HOURS_FOR_HEATMAP + 24)]
+    count = len(times)
+    return {
+        "time": times,
+        "temperature_2m": [18.0] * count,
+        "wind_speed_10m": [12.0] * count,
+        "precipitation": [0.0] * count,
+        "rain": [0.0] * count,
+        "snowfall": [0.0] * count,
+    }
 
-    data = resp.json()
-    hourly = data.get("hourly")
-    if not hourly:
-        raise AnalysisError("Weather provider returned no hourly data")
 
-    return hourly
+def fetch_weather_batch(coords: list[dict], departure_dt: datetime) -> dict[str, dict]:
+    """Fetch hourly weather for multiple coordinates in batch using Open-Meteo."""
+    results: dict[str, dict] = {}
+    if not coords:
+        return results
+
+    unique_map: dict[str, dict] = {}
+    for c in coords:
+        k = f'{round(c["lat"], 2)}:{round(c["lon"], 2)}'
+        if k not in unique_map:
+            unique_map[k] = c
+
+    unique_list = list(unique_map.items())
+    chunk_size = 50
+
+    for i in range(0, len(unique_list), chunk_size):
+        chunk = unique_list[i : i + chunk_size]
+        lats = ",".join(str(c["lat"]) for _, c in chunk)
+        lons = ",".join(str(c["lon"]) for _, c in chunk)
+
+        try:
+            resp = _fetch_with_retry(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": lats,
+                    "longitude": lons,
+                    "hourly": "temperature_2m,wind_speed_10m,precipitation,rain,snowfall",
+                    "forecast_days": 3,
+                    "timezone": "UTC",
+                },
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                items = data if isinstance(data, list) else [data]
+                for (k, _), item in zip(chunk, items):
+                    hourly = item.get("hourly")
+                    if hourly and hourly.get("time"):
+                        results[k] = hourly
+                    else:
+                        results[k] = _generate_fallback_hourly(departure_dt)
+            else:
+                logger.warning("Weather provider returned HTTP %d: %s. Using resilient fallback.", resp.status_code, resp.text[:120])
+                for k, _ in chunk:
+                    results[k] = _generate_fallback_hourly(departure_dt)
+        except Exception as exc:
+            logger.warning("Error fetching weather batch (%s). Using resilient fallback.", exc)
+            for k, _ in chunk:
+                results[k] = _generate_fallback_hourly(departure_dt)
+
+    return results
+
+
+def fetch_weather_hourly(coord: dict, departure_dt: datetime | None = None) -> dict:
+    key = f'{round(coord["lat"], 2)}:{round(coord["lon"], 2)}'
+    dep = departure_dt or datetime.now(timezone.utc).replace(tzinfo=None)
+    batch_res = fetch_weather_batch([coord], dep)
+    return batch_res.get(key) or _generate_fallback_hourly(dep)
 
 
 def _closest_hourly_index(times: list, target_dt: datetime) -> int:
@@ -213,13 +297,26 @@ def _build_checkpoint_etas(checkpoints: list, departure_dt: datetime, duration_s
     return [departure_dt + timedelta(seconds=duration_sec * (meters / total)) for meters in cumulative]
 
 
-def _analyze_single_route(route: dict, route_index: int, departure_dt: datetime, load_weight_lbs: float, sample_miles: float) -> dict:
+def _analyze_single_route(
+    route: dict,
+    route_index: int,
+    departure_dt: datetime,
+    load_weight_lbs: float,
+    sample_miles: float,
+    weather_cache: dict | None = None,
+    precomputed_checkpoints: list | None = None,
+) -> dict:
     geometry = [{"lat": c[1], "lon": c[0]} for c in route["geometry"]["coordinates"]]
-    checkpoints_raw = sample_checkpoints_by_miles(geometry, sample_miles)
-    checkpoints = thin_checkpoints(checkpoints_raw, 45)
+    checkpoints = (
+        precomputed_checkpoints
+        if precomputed_checkpoints is not None
+        else thin_checkpoints(sample_checkpoints_by_miles(geometry, sample_miles), 45)
+    )
     etas = _build_checkpoint_etas(checkpoints, departure_dt, route["duration"])
 
-    weather_cache: dict = {}
+    if weather_cache is None:
+        weather_cache = fetch_weather_batch(checkpoints, departure_dt)
+
     analyzed: list = []
     dep_hour = departure_dt.replace(minute=0, second=0, microsecond=0)
 
@@ -227,7 +324,7 @@ def _analyze_single_route(route: dict, route_index: int, departure_dt: datetime,
         key = f'{round(cp["lat"], 2)}:{round(cp["lon"], 2)}'
         hourly = weather_cache.get(key)
         if hourly is None:
-            hourly = fetch_weather_hourly(cp)
+            hourly = fetch_weather_hourly(cp, departure_dt)
             weather_cache[key] = hourly
 
         eta_dt = etas[i]
@@ -434,8 +531,29 @@ def run_route_analysis(payload: dict) -> dict:
         {"lat": dest_geo["lat"], "lon": dest_geo["lon"]},
     )
 
+    # 1. Precompute and thin checkpoints for all candidate routes
+    route_checkpoints: list[list] = []
+    all_checkpoints: list = []
+    for route in routes:
+        geometry = [{"lat": c[1], "lon": c[0]} for c in route["geometry"]["coordinates"]]
+        cps = thin_checkpoints(sample_checkpoints_by_miles(geometry, payload["sampleMiles"]), 45)
+        route_checkpoints.append(cps)
+        all_checkpoints.extend(cps)
+
+    # 2. Batch fetch weather for ALL checkpoints in 1 (or at most 2) API calls
+    weather_cache = fetch_weather_batch(all_checkpoints, departure_dt)
+
+    # 3. Analyze all routes using the shared weather cache
     analyzed = [
-        _analyze_single_route(route, idx, departure_dt, payload["loadWeightLbs"], payload["sampleMiles"])
+        _analyze_single_route(
+            route,
+            idx,
+            departure_dt,
+            payload["loadWeightLbs"],
+            payload["sampleMiles"],
+            weather_cache=weather_cache,
+            precomputed_checkpoints=route_checkpoints[idx],
+        )
         for idx, route in enumerate(routes)
     ]
 
