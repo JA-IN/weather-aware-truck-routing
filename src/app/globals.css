@@ -163,3 +163,139 @@ body {
 input[type="range"] {
   accent-color: #22d3ee;
 }
+
+/* ---- Checkpoint risk strip + weather/risk timeline ---- */
+
+.cp-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.45) rgba(15, 23, 42, 0.6);
+}
+
+.cp-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.cp-scroll::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 999px;
+}
+
+.cp-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+.cp-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(34, 211, 238, 0.6);
+  background-clip: padding-box;
+}
+
+.risk-strip-row {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr) 6.5rem 5.25rem;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  border-radius: 0.7rem;
+  border: 1px solid transparent;
+  padding: 0.3rem 0.55rem;
+  text-align: left;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.risk-strip-row:hover {
+  background: rgba(148, 163, 184, 0.1);
+}
+
+.risk-strip-row--active {
+  background: rgba(34, 211, 238, 0.12);
+  border-color: rgba(34, 211, 238, 0.42);
+}
+
+.risk-strip-row__mile {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  white-space: nowrap;
+}
+
+.risk-strip-row__metric {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.risk-bar {
+  position: relative;
+  display: block;
+  height: 0.85rem;
+  width: 100%;
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.risk-bar__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.3);
+  transition: width 220ms ease;
+}
+
+.cp-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 4.4rem;
+  border-radius: 999px;
+  border: 1px solid;
+  padding: 0.16rem 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.cp-table thead th.cp-th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #0b1220;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+}
+
+.cp-table tbody tr.cp-row {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  transition: background-color 140ms ease;
+}
+
+.cp-table tbody tr.cp-row:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.cp-table tbody tr.cp-row--active {
+  background: rgba(34, 211, 238, 0.12);
+}
+
+.cp-table td.cp-td {
+  padding: 0.62rem 0.9rem;
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+
+.cp-table td.cp-td--mile {
+  font-weight: 700;
+  color: #f8fafc;
+}
