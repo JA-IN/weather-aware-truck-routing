@@ -1,9 +1,11 @@
 "use client";
 
 import { CircleMarker, MapContainer, Polyline, Popup, TileLayer, ZoomControl } from "react-leaflet";
-import { RISK_COLORS, type CheckpointAnalysis, type RouteOption } from "@/lib/domain";
+import { checkpointSnapshot, type CorridorLayer } from "@/lib/corridor";
+import { RISK_COLORS, type RouteOption } from "@/lib/domain";
+import { formatEta, formatInHr, formatMile, formatMph, formatTempF } from "@/lib/format";
 
-export type CorridorLayer = "risk" | "wind" | "precipitation" | "snow" | "closures";
+export type { CorridorLayer } from "@/lib/corridor";
 
 type CorridorMapProps = {
   routes: RouteOption[];
@@ -17,70 +19,9 @@ function routeColor(index: number): string {
   return ["#38bdf8", "#a78bfa", "#2dd4bf"][index] ?? "#94a3b8";
 }
 
-function getLayerColor(cp: CheckpointAnalysis, layer: CorridorLayer, forecastHour: number): string {
-  const h = Math.max(0, Math.min(71, forecastHour));
-
-  if (layer === "risk") {
-    const risk = cp.horizonRiskScores[h] ?? cp.riskScoreAtEta;
-    return RISK_COLORS[risk];
-  }
-
-  if (layer === "closures") {
-    const risk = cp.horizonRiskScores[h] ?? cp.riskScoreAtEta;
-    return risk >= 4 ? "#7f1d1d" : "#334155";
-  }
-
-  if (layer === "wind") {
-    const wind = cp.horizonWindMph?.[h] ?? cp.weatherAtEta.windMph;
-    if (wind >= 55) return "#7f1d1d";
-    if (wind >= 45) return "#ef4444";
-    if (wind >= 35) return "#f97316";
-    if (wind >= 25) return "#eab308";
-    return "#22c55e";
-  }
-
-  if (layer === "precipitation") {
-    const rain = cp.horizonRainInHr?.[h] ?? cp.weatherAtEta.rainInHr;
-    if (rain > 1) return "#7f1d1d";
-    if (rain >= 0.5) return "#ef4444";
-    if (rain >= 0.25) return "#f97316";
-    if (rain >= 0.1) return "#eab308";
-    return "#22c55e";
-  }
-
-  const snow = cp.horizonSnowInHr?.[h] ?? cp.weatherAtEta.snowInHr;
-  if (snow > 3) return "#7f1d1d";
-  if (snow >= 2) return "#ef4444";
-  if (snow >= 1) return "#f97316";
-  if (snow >= 0.5) return "#eab308";
-  return "#22c55e";
-}
-
-function buildPopup(cp: CheckpointAnalysis, forecastHour: number, layer: CorridorLayer): string {
-  const h = Math.max(0, Math.min(71, forecastHour));
-  const risk = cp.horizonRiskScores[h] ?? cp.riskScoreAtEta;
-  const wind = cp.horizonWindMph?.[h] ?? cp.weatherAtEta.windMph;
-  const rain = cp.horizonRainInHr?.[h] ?? cp.weatherAtEta.rainInHr;
-  const snow = cp.horizonSnowInHr?.[h] ?? cp.weatherAtEta.snowInHr;
-
-  const focus =
-    layer === "wind"
-      ? `${wind.toFixed(1)} mph wind`
-      : layer === "precipitation"
-        ? `${rain.toFixed(2)} in/hr rain`
-        : layer === "snow"
-          ? `${snow.toFixed(2)} in/hr snow`
-          : layer === "closures"
-            ? risk >= 4
-              ? "No-travel likely"
-              : "Passable"
-            : `Risk ${risk}`;
-
-  return `${focus}`;
-}
-
 export function CorridorMap({ routes, selectedRouteId, forecastHour, layer, showAllRoutes = true }: CorridorMapProps) {
   const selected = routes.find((r) => r.id === selectedRouteId) ?? routes[0];
+  if (!selected) return null;
 
   const renderedRoutes = showAllRoutes ? routes : [selected];
   const allPoints = renderedRoutes.flatMap((r) => r.geometry);
@@ -109,32 +50,43 @@ export function CorridorMap({ routes, selectedRouteId, forecastHour, layer, show
         ))}
 
         {selected.checkpoints.map((cp, idx) => {
-          const h = Math.max(0, Math.min(71, forecastHour));
-          const risk = cp.horizonRiskScores[h] ?? cp.riskScoreAtEta;
-          if (layer === "closures" && risk < 4) return null;
-
-          const color = getLayerColor(cp, layer, forecastHour);
+          const snapshot = checkpointSnapshot(cp, forecastHour, layer);
+          if (snapshot.dimmed) return null;
 
           return (
             <CircleMarker
               key={`${cp.mileMarker}-${idx}`}
               center={[cp.coordinate.lat, cp.coordinate.lon]}
               radius={5}
-              pathOptions={{ color: "#e2e8f0", weight: 1, fillColor: color, fillOpacity: 0.95 }}
+              pathOptions={{ color: "#e2e8f0", weight: 1, fillColor: snapshot.color, fillOpacity: 0.95 }}
             >
               <Popup>
                 <div className="text-xs text-slate-900">
-                  <p>
-                    <strong>Mile:</strong> {cp.mileMarker}
+                  <p className="mb-1 flex items-center gap-1.5 font-semibold">
+                    <span
+                      className="inline-block h-2.5 w-2.5 rounded-full"
+                      style={{ background: RISK_COLORS[cp.riskScoreAtEta] }}
+                    />
+                    Mile {formatMile(cp.mileMarker)} — {cp.riskLabelAtEta} at ETA
                   </p>
                   <p>
-                    <strong>Layer:</strong> {layer}
+                    <strong>ETA:</strong> {formatEta(cp.etaIso)}
                   </p>
                   <p>
-                    <strong>Snapshot (+{h}h):</strong> {buildPopup(cp, forecastHour, layer)}
+                    <strong>Wind:</strong> {formatMph(cp.weatherAtEta.windMph)}
                   </p>
                   <p>
-                    <strong>Risk:</strong> {risk}
+                    <strong>Rain:</strong> {formatInHr(cp.weatherAtEta.rainInHr)} •{" "}
+                    <strong>Snow:</strong> {formatInHr(cp.weatherAtEta.snowInHr)}
+                  </p>
+                  <p>
+                    <strong>Temp:</strong> {formatTempF(cp.weatherAtEta.temperatureF)}
+                  </p>
+                  <p className="mt-1 border-t border-slate-300 pt-1 text-slate-700">
+                    <strong>
+                      {layer} @ +{snapshot.hour}h:
+                    </strong>{" "}
+                    {snapshot.focus}
                   </p>
                 </div>
               </Popup>

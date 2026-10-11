@@ -11,7 +11,7 @@ test("E2E key UX flows", async ({ page }) => {
   await page.getByLabel("Load (lbs)").fill("36000");
   await page.getByRole("button", { name: "Run Route Risk Analysis" }).click();
 
-  await expect(page.getByText("Playback & Layer Controls")).toBeVisible({ timeout: 120000 });
+  await expect(page.getByRole("heading", { name: "Playback + Layer Controls" })).toBeVisible({ timeout: 120000 });
 
   const slider = page.locator('input[type="range"]').first();
   await slider.fill("6");
@@ -25,5 +25,20 @@ test("E2E key UX flows", async ({ page }) => {
   await expect(page.getByText("Side-by-Side Route Compare")).toBeVisible();
   await expect(page.locator('section:has-text("Side-by-Side Route Compare") select')).toHaveCount(2);
 
-  await expect(page.getByText("Scenario Snapshots (Departure Time Comparison)")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Scenario Snapshots" })).toBeVisible();
+
+  // Checkpoint weather & risk timeline (mile / ETA / wind / rain / snow / temp / risk)
+  await expect(
+    page.getByRole("heading", { name: "Checkpoint Weather & Risk Timeline" }),
+  ).toBeVisible();
+  for (const column of ["Mile", "ETA", "Wind", "Rain", "Snow", "Temp", "Risk"]) {
+    await expect(page.getByRole("columnheader", { name: column, exact: true })).toBeVisible();
+  }
+  await expect(page.locator("table tbody tr").first()).toBeVisible();
+
+  // Corridor risk strip: clicking a checkpoint row drives the forecast slider.
+  await expect(page.getByText("Corridor by checkpoint")).toBeVisible();
+  const before = await slider.inputValue();
+  await page.locator(".risk-strip-row").nth(3).click();
+  await expect(slider).not.toHaveValue(before);
 });
