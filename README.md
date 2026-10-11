@@ -148,6 +148,25 @@ Prioritization order implemented exactly:
 - `trip_requests`: request metadata
 - `route_analyses`: per-route scored outputs including geometry/checkpoints/summary JSON
 
+## Place resolution order
+
+Every location on earth is supported; these tiers only decide *who* resolves the name.
+
+1. **`lat, lon` typed into the form** (e.g. `31.22000, 75.37000`) - used as given, no geocoder call.
+2. **Server-side Nominatim** - the normal path on any deploy with outbound access. Tried first for
+   free-text input, so no fallback below can shadow a working geocoder.
+3. **Browser-side Nominatim** (`src/lib/geocode-browser.ts`) - reached only after the API has already
+   failed with a geocoding error: the operator's browser resolves the place and the request is retried
+   with coordinates. This is what keeps arbitrary towns working when the *server* has no egress
+   (sandbox, CI, strict firewall) but the browser does. 8s timeout, per-session cache, failures are
+   deliberately not cached, and it never throws.
+4. **Offline gazetteer** (96 North American + Indian freight cities) - last resort, only with
+   `ALLOW_OFFLINE_ROUTE_FALLBACK=1`, and only for listed names; anything else returns an error that
+   tells the user to enter coordinates rather than silently guessing.
+
+A cyan line under the form names the places when tier 3 was used, so a substituted resolution is
+always visible in the UI.
+
 ## Offline / degraded mode (`ALLOW_OFFLINE_ROUTE_FALLBACK`)
 
 By default the app is strict: if Nominatim or OSRM cannot be reached, `POST /api/route-analysis`
@@ -175,9 +194,9 @@ Responses from the Django backend (`backend/`) omit the field and are treated as
 fallback is implemented in the Next.js route handler only - the Python port intentionally mirrors just
 the strict production behavior.
 
-Independent of the flag, origin/destination accept raw coordinates — `30.7333, 76.7794`
-(`parseCoordinateInput`) — which skips geocoding entirely without inventing anything, so any
-place on earth is testable even in strict mode.
+Independent of the flag, origin/destination accept raw coordinates (`parseCoordinateInput`), which
+skips geocoding entirely without inventing anything, so any place on earth is testable even in strict
+mode. See *Place resolution order* above for the browser-side fallback.
 
 There is also a **"Load sample corridor"** button in the planner (and `/planner?sample=1`) that skips the
 network entirely by loading `src/lib/demo-corridor.ts` client-side.
