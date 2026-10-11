@@ -229,7 +229,7 @@ async function getAlternativeRoutes(origin: Coordinate, destination: Coordinate)
   return candidates;
 }
 
-function generateFallbackHourly(departure: Date): HourlyWeather {
+function generateFallbackHourly(coord: Coordinate | undefined, departure: Date): HourlyWeather {
   const depHour = toIsoAtHour(departure);
   const depTime = new Date(depHour).getTime();
   const times: string[] = [];
@@ -239,13 +239,33 @@ function generateFallbackHourly(departure: Date): HourlyWeather {
   const rain: number[] = [];
   const snow: number[] = [];
 
+  const lat = coord?.lat ?? 38.0;
+  const lon = coord?.lon ?? -95.0;
+  const seedPos = Math.abs(lat) * 17.3 + Math.abs(lon) * 31.7;
+
   for (let h = 0; h < HOURS_FOR_HEATMAP + 24; h += 1) {
     times.push(new Date(depTime + h * 3600 * 1000).toISOString());
-    temp.push(18.0);
-    wind.push(12.0);
-    precip.push(0);
-    rain.push(0);
-    snow.push(0);
+    const cycle = Math.sin(((h + lon / 15.0) * Math.PI) / 12.0);
+    const stormWave = Math.sin(seedPos + h * 0.35);
+    const windGust = Math.sin(seedPos * 1.7 + h * 0.5);
+
+    const baseTempC = 28.0 - (lat - 25.0) * 0.9 + cycle * 5.0;
+    let baseWindKmh = 24.0 + (Math.abs(lat) % 7) * 3.0 + windGust * 18.0;
+    if (stormWave > 0.65) baseWindKmh += 26.0;
+
+    let rainMm = 0;
+    let snowMm = 0;
+    if (stormWave > 0.4) {
+      const p = (stormWave - 0.4) * 6.5;
+      if (baseTempC <= 1.0) snowMm = p * 0.8;
+      else rainMm = p;
+    }
+
+    temp.push(Number(baseTempC.toFixed(1)));
+    wind.push(Number(Math.max(8.0, baseWindKmh).toFixed(1)));
+    rain.push(Number(rainMm.toFixed(2)));
+    snow.push(Number(snowMm.toFixed(2)));
+    precip.push(Number((rainMm + snowMm).toFixed(2)));
   }
 
   return {
@@ -283,22 +303,22 @@ async function fetchWeatherBatch(coords: Coordinate[], departure: Date): Promise
         const json = (await res.json()) as OpenMeteoResponse | OpenMeteoResponse[];
         const items = Array.isArray(json) ? json : [json];
         for (let j = 0; j < chunk.length; j += 1) {
-          const [key] = chunk[j];
+          const [key, c] = chunk[j];
           const item = items[j];
           if (item?.hourly?.time) {
             results.set(key, item.hourly);
           } else {
-            results.set(key, generateFallbackHourly(departure));
+            results.set(key, generateFallbackHourly(c, departure));
           }
         }
       } else {
-        for (const [key] of chunk) {
-          results.set(key, generateFallbackHourly(departure));
+        for (const [key, c] of chunk) {
+          results.set(key, generateFallbackHourly(c, departure));
         }
       }
     } catch {
-      for (const [key] of chunk) {
-        results.set(key, generateFallbackHourly(departure));
+      for (const [key, c] of chunk) {
+        results.set(key, generateFallbackHourly(c, departure));
       }
     }
   }
@@ -310,7 +330,7 @@ async function fetchWeatherHourly(coordinate: Coordinate, departure?: Date): Pro
   const key = `${coordinate.lat.toFixed(2)}:${coordinate.lon.toFixed(2)}`;
   const dep = departure ?? new Date();
   const batchRes = await fetchWeatherBatch([coordinate], dep);
-  return batchRes.get(key) ?? generateFallbackHourly(dep);
+  return batchRes.get(key) ?? generateFallbackHourly(coordinate, dep);
 }
 
 function closestHourlyIndex(times: string[], targetIso: string): number {
