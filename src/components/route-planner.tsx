@@ -6,7 +6,6 @@ import { useEffect, useMemo, useState } from "react";
 import { RISK_COLORS, RISK_LABELS, type RouteAnalysisResponse } from "@/lib/domain";
 import { CORRIDOR_LAYERS, MAX_FORECAST_HOUR, type CorridorLayer } from "@/lib/corridor";
 import { CheckpointRiskStrip, CheckpointTimeline } from "@/components/checkpoint-timeline";
-import { buildSampleAnalysis } from "@/lib/demo-corridor";
 import { apiUrl } from "@/lib/api-config";
 import { geocodeInBrowser, isGeocodeFailure } from "@/lib/geocode-browser";
 
@@ -43,23 +42,14 @@ function formatShift(shiftHours: number): string {
   return `Delay ${shiftHours}h`;
 }
 
-type RoutePlannerProps = {
-  /** Seeds the dashboard from the bundled corridor (used by /planner?sample=1). */
-  startWithSample?: boolean;
-};
-
-export function RoutePlanner({ startWithSample = false }: RoutePlannerProps) {
-  // Seeded synchronously (not via an effect) so SSR + hydration agree and the
-  // dashboard is in the first paint when booting from the sample corridor.
-  const [bootstrap] = useState<RouteAnalysisResponse | null>(() => (startWithSample ? buildSampleAnalysis() : null));
-
+export function RoutePlanner() {
   const [form, setForm] = useState<PlannerState>(DEFAULT_STATE);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<RouteAnalysisResponse | null>(bootstrap);
-  const [analysisSource, setAnalysisSource] = useState<"live" | "offline" | "sample">(bootstrap ? "sample" : "live");
+  const [data, setData] = useState<RouteAnalysisResponse | null>(null);
+  const [analysisSource, setAnalysisSource] = useState<"live" | "offline">("live");
   const [geocodeNote, setGeocodeNote] = useState<string | null>(null);
-  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(bootstrap?.recommendedRouteId ?? null);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
 
   const [layer, setLayer] = useState<CorridorLayer>("risk");
   const [forecastHour, setForecastHour] = useState(0);
@@ -67,10 +57,8 @@ export function RoutePlanner({ startWithSample = false }: RoutePlannerProps) {
 
   const [activeCheckpointIndex, setActiveCheckpointIndex] = useState<number | null>(null);
 
-  const [compareA, setCompareA] = useState<string | null>(bootstrap?.routes[0]?.id ?? null);
-  const [compareB, setCompareB] = useState<string | null>(
-    bootstrap ? (bootstrap.routes[1]?.id ?? bootstrap.routes[0]?.id ?? null) : null,
-  );
+  const [compareA, setCompareA] = useState<string | null>(null);
+  const [compareB, setCompareB] = useState<string | null>(null);
 
   const selectedRoute = useMemo(() => {
     if (!data) return null;
@@ -92,9 +80,9 @@ export function RoutePlanner({ startWithSample = false }: RoutePlannerProps) {
     return () => clearInterval(timer);
   }, [isPlaying]);
 
-  function applyAnalysis(json: RouteAnalysisResponse, isSample: boolean) {
+  function applyAnalysis(json: RouteAnalysisResponse) {
     setData(json);
-    setAnalysisSource(isSample ? "sample" : json.dataSource === "offline" ? "offline" : "live");
+    setAnalysisSource(json.dataSource === "offline" ? "offline" : "live");
     setSelectedRouteId(json.recommendedRouteId);
     setCompareA(json.routes[0]?.id ?? null);
     setCompareB(json.routes[1]?.id ?? json.routes[0]?.id ?? null);
@@ -102,11 +90,6 @@ export function RoutePlanner({ startWithSample = false }: RoutePlannerProps) {
     setIsPlaying(false);
     setLayer("risk");
     setActiveCheckpointIndex(null);
-  }
-
-  function loadSampleCorridor() {
-    setError(null);
-    applyAnalysis(buildSampleAnalysis(), true);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -162,7 +145,7 @@ export function RoutePlanner({ startWithSample = false }: RoutePlannerProps) {
 
       if (!res.ok) throw new Error(json.error ?? "Failed to analyze route");
 
-      applyAnalysis(json, false);
+      applyAnalysis(json);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unexpected error");
     } finally {
@@ -178,16 +161,12 @@ export function RoutePlanner({ startWithSample = false }: RoutePlannerProps) {
             <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Command Center</p>
             <h1 className="mt-2 flex flex-wrap items-center gap-2 text-2xl font-semibold text-white sm:text-3xl">
               Weather-Aware Truck Routing
-              {analysisSource !== "live" ? (
+              {analysisSource === "offline" ? (
                 <span
                   className="rounded-full border border-amber-300/40 bg-amber-400/10 px-2.5 py-0.5 text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-amber-200"
-                  title={
-                    analysisSource === "sample"
-                      ? "Bundled synthetic corridor loaded manually - no provider calls were made."
-                      : "A provider or the database was unreachable, so part of this corridor was generated offline."
-                  }
+                  title="A provider or the database was unreachable, so part of this corridor was generated offline."
                 >
-                  {analysisSource === "sample" ? "sample corridor" : "offline fallback"}
+                  offline fallback
                 </span>
               ) : null}
             </h1>
@@ -212,14 +191,10 @@ export function RoutePlanner({ startWithSample = false }: RoutePlannerProps) {
             <label className="field-group"><span className="field-label">Departure</span><input type="datetime-local" className="field-input" value={form.departureIsoLocal} onChange={(e) => setForm((s) => ({ ...s, departureIsoLocal: e.target.value }))} required /></label>
             <label className="field-group"><span className="field-label">Load (lbs)</span><input type="number" min={1} className="field-input" value={form.loadWeightLbs} onChange={(e) => setForm((s) => ({ ...s, loadWeightLbs: e.target.value }))} required /></label>
             <label className="field-group"><span className="field-label">Interval</span><select className="field-input" value={form.sampleMiles} onChange={(e) => setForm((s) => ({ ...s, sampleMiles: e.target.value as PlannerState["sampleMiles"] }))}><option value="10">10 mi</option><option value="25">25 mi</option><option value="50">50 mi</option></select></label>
-            <div className="flex flex-col gap-2 sm:flex-row md:col-span-2 lg:col-span-5">
-              <button type="submit" disabled={loading} className="btn-primary flex-1">{loading ? "Analyzing..." : "Run Route Risk Analysis"}</button>
-              <button type="button" onClick={loadSampleCorridor} disabled={loading} className="btn-secondary flex-1 text-center sm:max-w-[15rem]">Load sample corridor</button>
-            </div>
+            <button type="submit" disabled={loading} className="btn-primary md:col-span-2 lg:col-span-5">{loading ? "Analyzing..." : "Run Route Risk Analysis"}</button>
             <p className="text-[0.7rem] leading-relaxed text-slate-500 lg:col-span-5">
-              &quot;Load sample corridor&quot; uses a bundled synthetic Dallas-to-Denver corridor. Origin/destination also
-              accept raw &quot;lat, lon&quot; pairs, and ALLOW_OFFLINE_ROUTE_FALLBACK=1 adds a gazetteer + synthetic corridor
-              fallback - so every surface stays reviewable with no geocoding, routing, weather or database access.
+              Origin/destination accept place names or raw &quot;lat, lon&quot; pairs (e.g. 31.22000, 75.37000), which skip
+              geocoding entirely.
             </p>
           </form>
           {geocodeNote ? <p className="mt-3 text-xs text-cyan-200/80">{geocodeNote}</p> : null}
@@ -227,8 +202,8 @@ export function RoutePlanner({ startWithSample = false }: RoutePlannerProps) {
             <p className="mt-3 text-sm text-rose-200">
               {error}
               <span className="ml-1 text-rose-200/70">
-                Live providers unreachable from this network? Use &quot;Load sample corridor&quot;, type coordinates
-                directly (&quot;30.7333, 76.7794&quot;), or start the server with ALLOW_OFFLINE_ROUTE_FALLBACK=1.
+                Live providers unreachable from this network? Try entering coordinates directly
+                (&quot;30.7333, 76.7794&quot;).
               </span>
             </p>
           ) : null}

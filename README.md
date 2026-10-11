@@ -165,7 +165,9 @@ Every location on earth is supported; these tiers only decide *who* resolves the
    tells the user to enter coordinates rather than silently guessing.
 
 A cyan line under the form names the places when tier 3 was used, so a substituted resolution is
-always visible in the UI.
+always visible in the UI. There is deliberately no bundled "demo data" mode: every number on screen
+comes from a provider (or is flagged as an offline fallback), so nothing in the UI can present
+invented data as real.
 
 ## Offline / degraded mode (`ALLOW_OFFLINE_ROUTE_FALLBACK`)
 
@@ -197,9 +199,6 @@ the strict production behavior.
 Independent of the flag, origin/destination accept raw coordinates (`parseCoordinateInput`), which
 skips geocoding entirely without inventing anything, so any place on earth is testable even in strict
 mode. See *Place resolution order* above for the browser-side fallback.
-
-There is also a **"Load sample corridor"** button in the planner (and `/planner?sample=1`) that skips the
-network entirely by loading `src/lib/demo-corridor.ts` client-side.
 
 ## Production Notes
 - Added retry + timeout wrapping for upstream API calls.

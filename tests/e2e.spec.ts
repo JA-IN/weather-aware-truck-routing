@@ -1,34 +1,5 @@
 import { test, expect } from "@playwright/test";
 
-/**
- * Boots the planner on the bundled sample corridor (?sample=1) so this covers the
- * checkpoint strip + timeline UI even when Nominatim/OSRM/Open-Meteo or Postgres
- * are unreachable (the failure mode that blocked E2E-001..005 in TEST_MATRIX.md).
- */
-test("checkpoint risk strip + weather timeline (offline sample corridor)", async ({ page }) => {
-  const base = process.env.PREVIEW_URL;
-  if (!base) throw new Error("PREVIEW_URL missing");
-
-  await page.goto(`${base.replace(/\/$/, "")}/planner?sample=1`, { waitUntil: "networkidle" });
-
-  await expect(page.getByRole("heading", { name: "Checkpoint Weather & Risk Timeline" })).toBeVisible();
-  for (const column of ["Mile", "ETA", "Wind", "Rain", "Snow", "Temp", "Risk"]) {
-    await expect(page.getByRole("columnheader", { name: column, exact: true })).toBeVisible();
-  }
-
-  const slider = page.locator('input[type="range"]').first();
-  await expect(page.getByText("Corridor by checkpoint")).toBeVisible();
-  const before = await slider.inputValue();
-  await page.locator(".risk-strip-row").nth(4).click();
-  await expect(slider).not.toHaveValue(before);
-
-  await page.getByRole("button", { name: "wind", exact: true }).click();
-  await page.getByRole("button", { name: "Play" }).click();
-  await expect(page.getByRole("button", { name: "Pause" })).toBeVisible();
-
-  await expect(page.getByText("sample corridor")).toBeVisible();
-});
-
 test("E2E key UX flows", async ({ page }) => {
   const base = process.env.PREVIEW_URL;
   if (!base) throw new Error("PREVIEW_URL missing");
