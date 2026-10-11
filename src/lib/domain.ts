@@ -91,6 +91,8 @@ export type RouteAnalysisResponse = {
   sampleMiles: number;
   recommendedRouteId: string;
   routes: RouteOption[];
+  /** "offline" = geocoding/routing providers were unreachable and a gated fallback was used. */
+  dataSource?: "live" | "offline";
   departureOptimization: DepartureOptimization;
   explainability: Explainability;
 };

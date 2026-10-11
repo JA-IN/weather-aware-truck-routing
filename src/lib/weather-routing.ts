@@ -20,6 +20,13 @@ import {
   thinCheckpoints,
 } from "@/lib/geo";
 import { classifyRisk, riskLabel, summarizeCheckpointRisks } from "@/lib/risk";
+import {
+  OFFLINE_GAZETTEER_SIZE,
+  offlineFallbackEnabled,
+  offlineGeocode,
+  offlineRoutes,
+  parseCoordinateInput,
+} from "@/lib/offline-fallback";
 
 type GeocodeResult = {
   lat: number;
@@ -114,7 +121,7 @@ async function fetchWithRetry(url: string, init?: RequestInit): Promise<Response
   throw lastErr instanceof Error ? lastErr : new Error("Network request failed");
 }
 
-async function geocode(place: string): Promise<GeocodeResult> {
+async function geocodeViaNominatim(place: string): Promise<GeocodeResult> {
   const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(place)}`;
 
   const res = await fetchWithRetry(url, {
@@ -137,6 +144,41 @@ async function geocode(place: string): Promise<GeocodeResult> {
     lon: Number(first.lon),
     displayName: first.display_name,
   };
+}
+
+type ResolvedPlace = GeocodeResult & { offline: boolean };
+
+/**
+ * Nominatim first. The gazetteer fallback only engages when
+ * ALLOW_OFFLINE_ROUTE_FALLBACK=1, so production behaviour (hard error on a
+ * geocoding outage) is unchanged.
+ */
+async function geocode(place: string): Promise<ResolvedPlace> {
+  // "30.7333, 76.7794" resolves without any provider - always available, and not
+  // a synthetic value: the operator supplied the coordinates themselves.
+  const typed = parseCoordinateInput(place);
+  if (typed) {
+    return {
+      lat: typed.lat,
+      lon: typed.lon,
+      displayName: `${typed.lat.toFixed(4)}, ${typed.lon.toFixed(4)} (entered coordinates)`,
+      offline: false,
+    };
+  }
+
+  try {
+    const result = await geocodeViaNominatim(place);
+    return { ...result, offline: false };
+  } catch (error) {
+    const fallback = offlineGeocode(place);
+    if (fallback) return fallback;
+    if (offlineFallbackEnabled()) {
+      throw new Error(
+        `Unable to geocode "${place}": the geocoding provider is unreachable and the place is not in the offline gazetteer (${OFFLINE_GAZETTEER_SIZE} cities). Enter coordinates instead, e.g. "30.7333, 76.7794".`,
+      );
+    }
+    throw error;
+  }
 }
 
 async function routeViaOsrm(waypoints: Coordinate[], alternatives = true): Promise<OsrmRoute[]> {
@@ -624,10 +666,24 @@ export async function runRouteAnalysis(input: {
 
   const [originGeo, destGeo] = await Promise.all([geocode(input.origin), geocode(input.destination)]);
 
-  const routes = await getAlternativeRoutes(
-    { lat: originGeo.lat, lon: originGeo.lon },
-    { lat: destGeo.lat, lon: destGeo.lon },
-  );
+  const endpoints = {
+    origin: { lat: originGeo.lat, lon: originGeo.lon },
+    destination: { lat: destGeo.lat, lon: destGeo.lon },
+  };
+
+  let routes: OsrmRoute[];
+  let routesOffline = false;
+  try {
+    routes = await getAlternativeRoutes(endpoints.origin, endpoints.destination);
+  } catch (error) {
+    const fallback = offlineRoutes(endpoints.origin, endpoints.destination);
+    if (!fallback) throw error;
+    routes = fallback;
+    routesOffline = true;
+  }
+
+  const dataSource: "live" | "offline" =
+    originGeo.offline || destGeo.offline || routesOffline ? "offline" : "live";
 
   const routeCheckpoints: Coordinate[][] = [];
   const allCheckpoints: Coordinate[] = [];
@@ -658,38 +714,51 @@ export async function runRouteAnalysis(input: {
   const departureOptimization = buildDepartureOptimization(ranked[0], departure.toISOString());
   const explainability = buildExplainability(ranked);
 
-  const [requestRow] = await db
-    .insert(tripRequests)
-    .values({
-      origin: originGeo.displayName,
-      destination: destGeo.displayName,
-      departureTime: departure,
-      loadWeightLbs: input.loadWeightLbs,
-      sampleMiles: input.sampleMiles,
-    })
-    .returning({ id: tripRequests.id });
+  // Persistence is a side effect. If the database is unavailable the scoring
+  // already succeeded, so return the analysis and log instead of failing the request.
+  let requestId = 0;
+  try {
+    const [requestRow] = await db
+      .insert(tripRequests)
+      .values({
+        origin: originGeo.displayName,
+        destination: destGeo.displayName,
+        departureTime: departure,
+        loadWeightLbs: input.loadWeightLbs,
+        sampleMiles: input.sampleMiles,
+      })
+      .returning({ id: tripRequests.id });
 
-  if (!requestRow) throw new Error("Failed to persist request");
+    if (!requestRow) throw new Error("insert returned no row");
+    requestId = requestRow.id;
 
-  await db.insert(routeAnalyses).values(
-    ranked.map((route) => ({
-      tripRequestId: requestRow.id,
-      routeRank: route.rank,
-      routeLabel: route.label,
-      distanceMiles: route.summary.distanceMiles,
-      durationMinutes: route.summary.durationMinutes,
-      avgRiskScore: route.summary.avgRiskScore,
-      severeMiles: route.summary.severeMiles,
-      highMiles: route.summary.highMiles,
-      noTravelMiles: route.summary.noTravelMiles,
-      geometry: route.geometry,
-      checkpoints: route.checkpoints,
-      summary: route.summary,
-    })),
-  );
+    await db.insert(routeAnalyses).values(
+      ranked.map((route) => ({
+        tripRequestId: requestRow.id,
+        routeRank: route.rank,
+        routeLabel: route.label,
+        distanceMiles: route.summary.distanceMiles,
+        durationMinutes: route.summary.durationMinutes,
+        avgRiskScore: route.summary.avgRiskScore,
+        severeMiles: route.summary.severeMiles,
+        highMiles: route.summary.highMiles,
+        noTravelMiles: route.summary.noTravelMiles,
+        geometry: route.geometry,
+        checkpoints: route.checkpoints,
+        summary: route.summary,
+      })),
+    );
+  } catch (error) {
+    requestId = 0;
+    console.warn(
+      `[route-analysis] analysis succeeded but was not persisted: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 
   return {
-    requestId: requestRow.id,
+    requestId,
     origin: originGeo.displayName,
     destination: destGeo.displayName,
     departureIso: departure.toISOString(),
@@ -697,6 +766,7 @@ export async function runRouteAnalysis(input: {
     sampleMiles: input.sampleMiles,
     recommendedRouteId: ranked[0].id,
     routes: ranked,
+    dataSource,
     departureOptimization,
     explainability,
   };
@@ -741,6 +811,7 @@ export async function getStoredAnalysis(requestId: number): Promise<RouteAnalysi
     sampleMiles: request.sampleMiles,
     recommendedRouteId: routes[0].id,
     routes,
+    dataSource: "live",
     departureOptimization,
     explainability,
   };

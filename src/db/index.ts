@@ -15,6 +15,9 @@ export const pool =
   globalForDb.__arenaNextJsPostgresqlPool ??
   new Pool({
     connectionString: databaseUrl,
+    // Fail fast instead of hanging the API when the database is unreachable.
+    connectionTimeoutMillis: 2_500,
+    query_timeout: 10_000,
   });
 
 if (process.env.NODE_ENV !== "production") {

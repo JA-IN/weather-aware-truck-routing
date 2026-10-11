@@ -121,8 +121,19 @@ Prioritization order implemented exactly:
 
 ### Visualization
 - Interactive map with routes + checkpoint markers ✅
-- ETA/risk/weather checkpoint table ✅
+  - Marker color follows the active layer + forecast hour; the popup always reports the
+    weather/risk at that checkpoint's **own ETA** (mile, ETA, risk label, wind, rain, snow, temp)
+    plus the `layer @ +Hh` snapshot driving the dot color.
+- Corridor risk strip (`CheckpointRiskStrip`): one row per checkpoint — `Mile N`, a bar colored by the
+  active layer (fill = that layer's driver, e.g. wind mph), and a risk chip. Rows are buttons:
+  hovering syncs the highlight with the timeline table, clicking jumps the 0–48h slider to that
+  checkpoint's ETA (and pauses playback) ✅
+- **Checkpoint Weather & Risk Timeline** table (`CheckpointTimeline`): Mile / ETA / Wind / Rain /
+  Snow / Temp / Risk pill, sampled at each checkpoint's ETA, sticky header, per-row risk edge,
+  worst-risk + severe+/no-travel counters ✅
 - Corridor weather heatmap with 0–48h slider ✅
+- Layer + hour logic lives in `src/lib/corridor.ts` (`checkpointSnapshot`) so the map, strip and
+  table can never disagree; display formatting lives in `src/lib/format.ts`.
 
 ## API
 - `POST /api/route-analysis`:
@@ -136,6 +147,40 @@ Prioritization order implemented exactly:
 ## Data Model
 - `trip_requests`: request metadata
 - `route_analyses`: per-route scored outputs including geometry/checkpoints/summary JSON
+
+## Offline / degraded mode (`ALLOW_OFFLINE_ROUTE_FALLBACK`)
+
+By default the app is strict: if Nominatim or OSRM cannot be reached, `POST /api/route-analysis`
+fails with an error. That is deliberate - a dispatcher must never be shown invented coordinates or a
+fabricated route.
+
+For sandboxes, CI and air-gapped demos you can opt in:
+
+```bash
+ALLOW_OFFLINE_ROUTE_FALLBACK=1   # .env.local / environment variable (server-side only)
+```
+
+With it enabled, two provider calls fall back to bundled data:
+
+| Failing dependency | Fallback | Effect on the response |
+|---|---|---|
+| Nominatim geocoding | `src/lib/offline-fallback.ts` gazetteer (96 North American + Indian freight cities) | coordinates from the gazetteer |
+| OSRM routing | synthetic corridor: direct band + two perpendicular bows, 62 mph average track speed | drivable-geometry approximation, not a real route |
+| Open-Meteo | `generateFallbackHourly` (pre-existing, deterministic sine/storm model) | synthetic weather |
+| PostgreSQL | analysis is returned unpersisted with a `console.warn` (also `connectionTimeoutMillis` / `query_timeout` in `src/db`) | `requestId: 0`, so `GET ?requestId=` cannot replay it |
+
+Any response built this way carries **`dataSource: "offline"`**, and the planner shows an amber
+"offline fallback" badge plus a warning banner so degraded output can never be mistaken for live data.
+Responses from the Django backend (`backend/`) omit the field and are treated as live. The offline
+fallback is implemented in the Next.js route handler only - the Python port intentionally mirrors just
+the strict production behavior.
+
+Independent of the flag, origin/destination accept raw coordinates — `30.7333, 76.7794`
+(`parseCoordinateInput`) — which skips geocoding entirely without inventing anything, so any
+place on earth is testable even in strict mode.
+
+There is also a **"Load sample corridor"** button in the planner (and `/planner?sample=1`) that skips the
+network entirely by loading `src/lib/demo-corridor.ts` client-side.
 
 ## Production Notes
 - Added retry + timeout wrapping for upstream API calls.
