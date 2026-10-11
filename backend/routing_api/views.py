@@ -1,6 +1,7 @@
 import logging
 import time
 
+import requests
 from django.db import connection
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -75,9 +76,22 @@ class RouteAnalysisView(APIView):
 
 class HealthView(APIView):
     def get(self, request):
+        db_ok = True
         try:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT 1")
-            return Response({"ok": True})
-        except Exception:  # noqa: BLE001
-            return Response({"ok": False}, status=500)
+        except Exception:
+            db_ok = False
+
+        weather_probe = {}
+        try:
+            r = requests.get(
+                "https://api.open-meteo.com/v1/forecast?latitude=40.0&longitude=-80.0&current_weather=true",
+                headers={"User-Agent": "weather-aware-truck-routing/1.0 (django-backend)"},
+                timeout=5,
+            )
+            weather_probe = {"status": r.status_code, "body": r.text[:200]}
+        except Exception as exc:
+            weather_probe = {"error": str(exc)}
+
+        return Response({"ok": db_ok, "weather_probe": weather_probe})
