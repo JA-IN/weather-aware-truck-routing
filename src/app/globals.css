@@ -1,0 +1,165 @@
+@import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  background:
+    radial-gradient(900px 420px at 10% -10%, rgba(56, 189, 248, 0.16), transparent 55%),
+    radial-gradient(840px 400px at 100% 0%, rgba(99, 102, 241, 0.15), transparent 58%),
+    #020617;
+}
+
+.bento-card {
+  position: relative;
+  border-radius: 1.25rem;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: linear-gradient(140deg, rgba(30, 41, 59, 0.52), rgba(15, 23, 42, 0.42));
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 10px 28px rgba(2, 6, 23, 0.35);
+}
+
+.bento-card::before {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(115deg, rgba(255, 255, 255, 0.08), transparent 35%, transparent 65%, rgba(255, 255, 255, 0.05));
+}
+
+.motion-fade-up {
+  animation: fadeUp 420ms ease both;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-fade-up {
+    animation: none;
+  }
+
+  * {
+    scroll-behavior: auto !important;
+  }
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.field-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: rgb(148 163 184);
+}
+
+.field-input {
+  width: 100%;
+  border-radius: 0.8rem;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  background: linear-gradient(150deg, rgba(30, 41, 59, 0.46), rgba(15, 23, 42, 0.55));
+  color: #f8fafc;
+  padding: 0.62rem 0.74rem;
+  font-size: 0.875rem;
+  outline: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.field-input:focus {
+  border-color: rgba(34, 211, 238, 0.7);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.15);
+  background: linear-gradient(150deg, rgba(30, 41, 59, 0.58), rgba(15, 23, 42, 0.62));
+}
+
+.btn-primary {
+  border-radius: 0.8rem;
+  border: 1px solid rgba(103, 232, 249, 0.4);
+  background: linear-gradient(92deg, rgba(34, 211, 238, 0.28), rgba(59, 130, 246, 0.25));
+  color: #ecfeff;
+  padding: 0.68rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 8px 20px rgba(6, 182, 212, 0.12);
+  transition: transform 0.2s ease, filter 0.2s ease;
+}
+
+.btn-primary:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+}
+
+.btn-secondary {
+  border-radius: 0.8rem;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  background: linear-gradient(130deg, rgba(30, 41, 59, 0.5), rgba(15, 23, 42, 0.48));
+  color: #e2e8f0;
+  padding: 0.52rem 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.route-option-card {
+  border-radius: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: linear-gradient(140deg, rgba(30, 41, 59, 0.45), rgba(15, 23, 42, 0.42));
+  text-align: left;
+  padding: 1rem;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.route-option-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.route-option-card--active {
+  border-color: rgba(34, 211, 238, 0.62);
+  background: linear-gradient(145deg, rgba(14, 116, 144, 0.28), rgba(30, 41, 59, 0.52));
+}
+
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: #f8fafc;
+}
+
+input[type="range"] {
+  accent-color: #22d3ee;
+}

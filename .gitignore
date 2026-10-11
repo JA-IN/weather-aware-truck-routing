@@ -1,0 +1,22 @@
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+.env
+.env.local
+
+# Django backend
+backend/.venv/
+backend/.deps/
+backend/db.sqlite3
+backend/.env
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/staticfiles/
+
+# Editor / OS
+.DS_Store
+*.log
